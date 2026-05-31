@@ -10,6 +10,10 @@ into TalentLMS → Module 8 → Core Skills Drill.
 import numpy as np
 import weaviate
 
+from sentence_transformers import SentenceTransformer
+
+
+_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def embed_text(text: str) -> np.ndarray:
     """Return a 384-dim float32 numpy vector for the input string.
@@ -23,7 +27,8 @@ def embed_text(text: str) -> np.ndarray:
     """
     # TODO: load all-MiniLM-L6-v2 (consider loading once at module level for speed)
     # TODO: encode the text and return as float32 numpy array of shape (384,)
-    raise NotImplementedError("embed_text is not yet implemented")
+    vector = _model.encode(text, convert_to_numpy=True)
+    return vector.astype(np.float32)
 
 
 def weaviate_ready(url: str) -> bool:
@@ -33,7 +38,11 @@ def weaviate_ready(url: str) -> bool:
     raising a connection error.
     """
     # TODO: try weaviate.Client(url).is_ready(); return False on any exception
-    raise NotImplementedError("weaviate_ready is not yet implemented")
+    try:
+        client = weaviate.Client(url)
+        return client.is_ready()
+    except Exception:
+        return False
 
 
 def ingest_corpus(client: weaviate.Client, class_name: str, items: list[dict]) -> int:
@@ -53,4 +62,41 @@ def ingest_corpus(client: weaviate.Client, class_name: str, items: list[dict]) -
     # TODO: batch-add each item with vector=item["vector"]
     # TODO: flush the batch
     # TODO: query the aggregate count and return it
-    raise NotImplementedError("ingest_corpus is not yet implemented")
+    existing_classes = client.schema.get().get("classes", [])
+    class_names = [c["class"] for c in existing_classes]
+
+    if class_name not in class_names:
+        schema = {
+            "class": class_name,
+            "vectorizer": "none",
+            "properties": [
+                {"name": "title", "dataType": ["text"]},
+                {"name": "text", "dataType": ["text"]},
+            ]
+        }
+        client.schema.create_class(schema)
+
+    # 2. batch ingest
+    with client.batch as batch:
+        batch.batch_size = 20
+
+        for item in items:
+            batch.add_data_object(
+                data_object={
+                    "title": item["title"],
+                    "text": item["text"]
+                },
+                class_name=class_name,
+                vector=item["vector"].tolist() if hasattr(item["vector"], "tolist") else item["vector"]
+            )
+
+    # 3. get count
+    result = (
+        client.query
+        .aggregate(class_name)
+        .with_meta_count()
+        .do()
+    )
+
+    count = result["data"]["Aggregate"][class_name][0]["meta"]["count"]
+    return count
